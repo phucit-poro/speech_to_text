@@ -147,6 +147,11 @@ public class SpeechToTextPlugin :
         channel?.setMethodCallHandler(this)
     }
 
+    private fun startContinuousListening(call: MethodCall, result: Result) {
+        shouldContinuousListen = true
+        startListening(call, result)
+    }
+
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
         this.pluginContext = null;
         channel?.setMethodCallHandler(null)
@@ -175,6 +180,11 @@ public class SpeechToTextPlugin :
         val result = ChannelResultWrapper(rawrResult)
         try {
             when (call.method) {
+                "startContinuous" -> startContinuousListening(call, result)
+                "stopContinuous" -> {
+                    shouldContinuousListen = false
+                    stopListening(result)
+                }
                 "has_permission" -> hasPermission(result)
                 "initialize" -> {
                     var dlog = call.argument<Boolean>("debugLogging")
@@ -326,6 +336,8 @@ public class SpeechToTextPlugin :
     }
 
     private fun stopListening(result: Result) {
+        shouldContinuousListen = false
+        restartRunnable?.let { restartHandler.removeCallbacks(it) }
         if (sdkVersionTooLow() || isNotInitialized() || isNotListening()) {
             result.success(false)
             return
@@ -725,7 +737,27 @@ public class SpeechToTextPlugin :
 
 
     override fun onPartialResults(results: Bundle?) = updateResults(results, false)
-    override fun onResults(results: Bundle?) = updateResults(results, true)
+//    override fun onResults(results: Bundle?) = updateResults(results, true)
+    override fun onResults(results: Bundle) {
+        val isFinal = true
+        sendRecognitionResult(results, isFinal)
+
+        if (shouldContinuousListen && isListening) {
+            restartRunnable?.let { restartHandler.removeCallbacks(it) }
+            restartRunnable = Runnable {
+                if (shouldContinuousListen && isListening) {
+                    try {
+                        speechRecognizer?.cancel()
+                        speechRecognizer?.startListening(recognizerIntent)
+                        Log.d(logTag, "Auto-restarted recognition")
+                    } catch (e: Exception) {
+                        Log.e(logTag, "Error auto-restarting: ${e.message}")
+                    }
+                }
+            }
+            restartHandler.postDelayed(restartRunnable!!, 50)
+    }
+}
     override fun onBeginningOfSpeech() {
         if (timer != null) {
             timer?.cancel()
@@ -733,21 +765,42 @@ public class SpeechToTextPlugin :
         }
     }
 
+//    override fun onEndOfSpeech() {
+//        (previousPauseFor ?: 1000).also {
+//            timerTask = object : TimerTask() {
+//                override fun run() {
+//                    timer = null
+//                    handler.post {
+//                        run {
+//                            notifyListening(isRecording = false)
+//                        }
+//                    }
+//                }
+//            }
+//            timer = Timer().apply {
+//                schedule(timerTask, it.toLong())
+//            }
+//        }
+//    }
+
     override fun onEndOfSpeech() {
-        (previousPauseFor ?: 1000).also {
-            timerTask = object : TimerTask() {
-                override fun run() {
-                    timer = null
-                    handler.post {
-                        run {
-                            notifyListening(isRecording = false)
-                        }
-                    }
+        Log.d(logTag, "onEndOfSpeech")
+
+        // NGĂN KHÔNG CHO DỪNG NẾU Ở CONTINUOUS MODE
+        if (shouldContinuousListen && isListening) {
+            restartRunnable?.let { restartHandler.removeCallbacks(it) }
+            restartRunnable = Runnable {
+                try {
+                    speechRecognizer?.cancel()
+                    speechRecognizer?.startListening(recognizerIntent)
+                    Log.d(logTag, "Restarted after end of speech")
+                } catch (e: Exception) {
+                    Log.e(logTag, "Error restarting: ${e.message}")
                 }
             }
-            timer = Timer().apply {
-                schedule(timerTask, it.toLong())
-            }
+            restartHandler.postDelayed(restartRunnable!!, 100)
+        } else {
+            stopListening(null)
         }
     }
 
